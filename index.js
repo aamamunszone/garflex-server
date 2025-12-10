@@ -30,6 +30,7 @@ const client = new MongoClient(uri, {
 
 // ========== DATABASE & COLLECTIONS ==========
 let database;
+let usersCollection;
 
 // ========== HEALTH CHECK ==========
 // Health Check Route (Public)
@@ -49,8 +50,39 @@ async function run() {
 
     // Initialize Database & Collections
     database = client.db('GarFlexDB');
+    usersCollection = database.collection('users');
 
     // ========== ROUTES START ==========
+    // ----------Users Collection APIs ----------
+    // Create User
+    app.post('/users', async (req, res) => {
+      try {
+        const newUser = req.body;
+        const email = newUser.email;
+
+        // Check if user already exists
+        const existingUser = await usersCollection.findOne({ email });
+        if (existingUser) {
+          return res.status(409).json({
+            success: false,
+            message: 'User already exists.',
+          });
+        }
+
+        const result = await usersCollection.insertOne(newUser);
+        res.status(201).json({
+          success: true,
+          message: 'User created successfully.',
+          data: result,
+        });
+      } catch (error) {
+        console.error('Create user error:', error?.message);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to create user.',
+        });
+      }
+    });
 
     // ========== ROUTES END ==========
 
@@ -70,25 +102,6 @@ async function run() {
 
 // Run the server
 run().catch(console.dir);
-
-// ========== ERROR HANDLING ==========
-// 404 Handler
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route Not Found',
-  });
-});
-
-// Global Error Handler
-app.use((err, req, res, next) => {
-  console.error('Error:', err.stack);
-  res.status(500).json({
-    success: false,
-    message: 'Internal Server Error',
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined,
-  });
-});
 
 // ========== SERVER START ==========
 app.listen(port, () => {
