@@ -13,7 +13,6 @@ app.use(express.json());
 
 // ========== MONGODB CONNECTION ==========
 const uri = process.env.MONGODB_URI;
-
 if (!uri) {
   console.error('MONGODB_URI is not defined in .env file');
   process.exit(1);
@@ -37,8 +36,11 @@ let usersCollection;
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
+    status: 'OK',
+    service: 'GarFlex API',
     message: 'GarFlex Server is Running!',
-    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    timestamp: new Date(),
   });
 });
 
@@ -53,33 +55,143 @@ async function run() {
     usersCollection = database.collection('users');
 
     // ========== ROUTES START ==========
+
     // ----------Users Collection APIs ----------
-    // Create User
-    app.post('/users', async (req, res) => {
+    // Create user via Email/password Auth
+    app.post('/users/register', async (req, res) => {
       try {
+        // User object
         const newUser = req.body;
-        const email = newUser.email;
+
+        // Validation
+        const uid = newUser.uid;
+        if (!uid) {
+          return res.status(400).json({
+            success: false,
+            message: 'Please complete registration using Firebase.',
+          });
+        }
 
         // Check if user already exists
+        const email = newUser.email;
         const existingUser = await usersCollection.findOne({ email });
         if (existingUser) {
           return res.status(409).json({
             success: false,
-            message: 'User already exists.',
+            message: 'User already registered. Please try to Login.',
           });
         }
 
+        // Insert user into database
         const result = await usersCollection.insertOne(newUser);
         res.status(201).json({
           success: true,
-          message: 'User created successfully.',
+          message: 'User registered successfully via Email/Password Auth.',
           data: result,
         });
       } catch (error) {
-        console.error('Create user error:', error?.message);
+        console.error('User registration error:', error?.message);
         res.status(500).json({
           success: false,
-          message: 'Failed to create user.',
+          message: 'Failed to register user. Please try again later.',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
+        });
+      }
+    });
+
+    // Create or Login user via Google OAuth
+    app.post('/users/google', async (req, res) => {
+      try {
+        // User object
+        const userData = req.body;
+
+        // Validation
+        const uid = userData.uid;
+        if (!uid) {
+          return res.status(400).json({
+            success: false,
+            message: 'Please complete registration using Firebase.',
+          });
+        }
+
+        // Check if user already exists
+        const email = userData.email;
+        const existingUser = await usersCollection.findOne({ email });
+        if (existingUser) {
+          // Update user
+          await usersCollection.updateOne(
+            { email },
+            {
+              $set: {
+                name: userData.name,
+                photoURL: userData.photoURL || existingUser.photoURL,
+                updatedAt: new Date(),
+                lastLoginAt: new Date(),
+              },
+            }
+          );
+          return res.status(200).json({
+            success: true,
+            message: 'User logged in successfully via Google OAuth.',
+          });
+        }
+
+        // Insert user into database
+        const result = await usersCollection.insertOne(userData);
+        res.status(201).json({
+          success: true,
+          message: 'User registered successfully via Google OAuth.',
+          data: result,
+        });
+      } catch (error) {
+        console.error('User registration error:', error?.message);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to register user. Please try again later.',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
+        });
+      }
+    });
+
+    // Update user when login via Email/Password Auth
+    app.patch('/users/login', async (req, res) => {
+      try {
+        // User object
+        const userData = req.body;
+
+        // Check if user already exists
+        const email = userData.email;
+        const existingUser = await usersCollection.findOne({ email });
+        if (!existingUser) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found in database.',
+          });
+        }
+
+        // If not exist then update user
+        await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              updatedAt: new Date(),
+              lastLoginAt: new Date(),
+            },
+          }
+        );
+        res.status(200).json({
+          success: true,
+          message: 'Login information synced successfully.',
+        });
+      } catch (error) {
+        console.error('Failed to update user:', error?.message);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to update user. Please try again later.',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
         });
       }
     });
