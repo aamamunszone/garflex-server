@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { MongoClient, ServerApiVersion } = require('mongodb');
+const admin = require('firebase-admin');
 
 // Express App Initialization
 const app = express();
@@ -10,6 +11,18 @@ const port = process.env.PORT || 3000;
 // ========== MIDDLEWARE ==========
 app.use(cors());
 app.use(express.json());
+
+// ========== FIREBASE ADMIN INITIALIZATION ==========
+// Initialize Firebase Admin SDK
+const decoded = Buffer.from(
+  process.env.FIREBASE_SERVICE_KEY,
+  'base64'
+).toString('utf8');
+const serviceAccount = JSON.parse(decoded);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+console.log('Firebase Admin initialized successfully!');
 
 // ========== MONGODB CONNECTION ==========
 const uri = process.env.MONGODB_URI;
@@ -30,6 +43,68 @@ const client = new MongoClient(uri, {
 // ========== DATABASE & COLLECTIONS ==========
 let database;
 let usersCollection;
+
+// ========== MIDDLEWARE: VERIFY FIREBASE TOKEN ==========
+const verifyFirebaseToken = async (req, res, next) => {
+  try {
+    // Get token from Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: No token provided.',
+      });
+    }
+
+    // Extract Token
+    const token = authHeader.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: Token is empty.',
+      });
+    }
+
+    // Verify token with Firebase Admin
+    const decodedToken = await admin.auth().verifyIdToken(token);
+
+    // Fetch user from database
+    const user = await usersCollection.findOne({ email: decodedToken.email });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found in database.',
+      });
+    }
+
+    req.user = decodedToken;
+
+    next();
+  } catch (error) {
+    console.error('Token verification error:', error?.message);
+
+    if (error?.code === 'auth/id-token-expired') {
+      return res.status(401).json({
+        success: false,
+        message: 'Token expired.',
+      });
+    }
+
+    if (error?.code === 'auth/argument-error') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token format.',
+      });
+    }
+
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized: Invalid token.',
+      error:
+        process.env.NODE_ENV === 'development' ? error?.message : undefined,
+    });
+  }
+};
 
 // ========== HEALTH CHECK ==========
 // Health Check Route (Public)
@@ -57,7 +132,7 @@ async function run() {
     // ========== ROUTES START ==========
 
     // ----------Users Collection APIs ----------
-    // Create user via Email/password Auth
+    // Create user via Email/password Auth (Public)
     app.post('/users/register', async (req, res) => {
       try {
         // User object
@@ -100,7 +175,7 @@ async function run() {
       }
     });
 
-    // Create or Login user via Google OAuth
+    // Create or Login user via Google OAuth (Public)
     app.post('/users/google', async (req, res) => {
       try {
         // User object
@@ -156,10 +231,10 @@ async function run() {
     });
 
     // Update user when login via Email/Password Auth
-    app.patch('/users/login', async (req, res) => {
+    app.patch('/users/login', verifyFirebaseToken, async (req, res) => {
       try {
         // User object
-        const userData = req.body;
+        const userData = req.user;
 
         // Check if user already exists
         const email = userData.email;
