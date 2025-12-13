@@ -49,15 +49,24 @@ const verifyFirebaseToken = async (req, res, next) => {
   try {
     // Get token from Authorization header
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // console.log(authHeader);
+
+    if (!authHeader) {
       return res.status(401).json({
         success: false,
         message: 'Unauthorized: No token provided.',
       });
     }
 
-    // Extract Token
-    const token = authHeader.split(' ')[1];
+    if (!authHeader.startsWith('Bearer')) {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized: Invalid auth scheme.',
+      });
+    }
+
+    const token = authHeader.replace('Bearer', '').trim();
+
     if (!token) {
       return res.status(401).json({
         success: false,
@@ -67,15 +76,6 @@ const verifyFirebaseToken = async (req, res, next) => {
 
     // Verify token with Firebase Admin
     const decodedToken = await admin.auth().verifyIdToken(token);
-
-    // Fetch user from database
-    const user = await usersCollection.findOne({ email: decodedToken.email });
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found in database.',
-      });
-    }
 
     req.user = decodedToken;
 
@@ -132,33 +132,13 @@ async function run() {
     // ========== ROUTES START ==========
 
     // ----------Users Collection APIs ----------
-    // Create user via Email/password Auth (Public)
-    app.post('/users/register', async (req, res) => {
+    // Create user via Email/password Auth (Protected)
+    app.post('/users/register', verifyFirebaseToken, async (req, res) => {
       try {
         // User object
-        const newUser = req.body;
-
-        // Validation
-        const uid = newUser.uid;
-        if (!uid) {
-          return res.status(400).json({
-            success: false,
-            message: 'Please complete registration using Firebase.',
-          });
-        }
-
-        // Check if user already exists
-        const email = newUser.email;
-        const existingUser = await usersCollection.findOne({ email });
-        if (existingUser) {
-          return res.status(409).json({
-            success: false,
-            message: 'User already registered. Please try to Login.',
-          });
-        }
-
+        const userData = req.body;
         // Insert user into database
-        const result = await usersCollection.insertOne(newUser);
+        const result = await usersCollection.insertOne(userData);
         res.status(201).json({
           success: true,
           message: 'User registered successfully via Email/Password Auth.',
@@ -175,23 +155,47 @@ async function run() {
       }
     });
 
-    // Create or Login user via Google OAuth (Public)
-    app.post('/users/google', async (req, res) => {
+    // Update user when login via Email/Password Auth (Protected)
+    app.patch('/users/login', verifyFirebaseToken, async (req, res) => {
       try {
+        const userData = req.user;
+        const email = userData.email;
+
+        // Update user
+        await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              updatedAt: new Date(),
+              lastLoginAt: new Date(),
+            },
+          }
+        );
+        res.status(200).json({
+          success: true,
+          message: 'Login information synced successfully.',
+        });
+      } catch (error) {
+        console.error('Failed to update user:', error?.message);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to update user. Please try again later.',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
+        });
+      }
+    });
+
+    // Create or Login user via Google OAuth (Protected)
+    app.post('/users/google', verifyFirebaseToken, async (req, res) => {
+      try {
+        const user = req.user;
+
         // User object
         const userData = req.body;
 
-        // Validation
-        const uid = userData.uid;
-        if (!uid) {
-          return res.status(400).json({
-            success: false,
-            message: 'Please complete registration using Firebase.',
-          });
-        }
-
         // Check if user already exists
-        const email = userData.email;
+        const email = user.email;
         const existingUser = await usersCollection.findOne({ email });
         if (existingUser) {
           // Update user
@@ -224,47 +228,6 @@ async function run() {
         res.status(500).json({
           success: false,
           message: 'Failed to register user. Please try again later.',
-          error:
-            process.env.NODE_ENV === 'development' ? error?.message : undefined,
-        });
-      }
-    });
-
-    // Update user when login via Email/Password Auth
-    app.patch('/users/login', verifyFirebaseToken, async (req, res) => {
-      try {
-        // User object
-        const userData = req.user;
-
-        // Check if user already exists
-        const email = userData.email;
-        const existingUser = await usersCollection.findOne({ email });
-        if (!existingUser) {
-          return res.status(404).json({
-            success: false,
-            message: 'User not found in database.',
-          });
-        }
-
-        // If not exist then update user
-        await usersCollection.updateOne(
-          { email },
-          {
-            $set: {
-              updatedAt: new Date(),
-              lastLoginAt: new Date(),
-            },
-          }
-        );
-        res.status(200).json({
-          success: true,
-          message: 'Login information synced successfully.',
-        });
-      } catch (error) {
-        console.error('Failed to update user:', error?.message);
-        res.status(500).json({
-          success: false,
-          message: 'Failed to update user. Please try again later.',
           error:
             process.env.NODE_ENV === 'development' ? error?.message : undefined,
         });
