@@ -237,6 +237,22 @@ async function run() {
     });
 
     // ---------- Products Collection APIs ----------
+    // Get all listings & specific user's listings by email using query params (Public)
+    app.get('/products', async (req, res) => {
+      try {
+        const email = req.query.email;
+        const query = {};
+        if (email) {
+          query.createdBy = email;
+        }
+        const cursor = productsCollection.find(query);
+        const products = await cursor.toArray();
+        res.status(200).json(products);
+      } catch (error) {
+        res.status(500).send({ message: 'Failed to fetch products', error });
+      }
+    });
+
     // Get recent 6 products (Public)
     app.get('/products/recent', async (req, res) => {
       try {
