@@ -43,6 +43,7 @@ const client = new MongoClient(uri, {
 // ========== DATABASE & COLLECTIONS ==========
 let database;
 let usersCollection;
+let productsCollection;
 
 // ========== MIDDLEWARE: VERIFY FIREBASE TOKEN ==========
 const verifyFirebaseToken = async (req, res, next) => {
@@ -58,14 +59,14 @@ const verifyFirebaseToken = async (req, res, next) => {
       });
     }
 
-    if (!authHeader.startsWith('Bearer')) {
+    if (!authHeader.startsWith('Bearer ')) {
       return res.status(403).json({
         success: false,
         message: 'Unauthorized: Invalid auth scheme.',
       });
     }
 
-    const token = authHeader.replace('Bearer', '').trim();
+    const token = authHeader.replace('Bearer ', '').trim();
 
     if (!token) {
       return res.status(401).json({
@@ -128,10 +129,11 @@ async function run() {
     // Initialize Database & Collections
     database = client.db('GarFlexDB');
     usersCollection = database.collection('users');
+    productsCollection = database.collection('products');
 
     // ========== ROUTES START ==========
 
-    // ----------Users Collection APIs ----------
+    // ---------- Users Collection APIs ----------
     // Create user via Email/password Auth (Protected)
     app.post('/users/register', verifyFirebaseToken, async (req, res) => {
       try {
@@ -231,6 +233,33 @@ async function run() {
           error:
             process.env.NODE_ENV === 'development' ? error?.message : undefined,
         });
+      }
+    });
+
+    // ---------- Products Collection APIs ----------
+    // Get recent 6 products (Public)
+    app.get('/products/recent', async (req, res) => {
+      try {
+        const sortFields = { createdAt: -1 };
+        const limitNum = 6;
+        const projection = {
+          name: 1,
+          shortDescription: 1,
+          category: 1,
+          price: 1,
+          availableQuantity: 1,
+          minimumOrderQuantity: 1,
+          images: 1,
+        };
+        const cursor = productsCollection
+          .find()
+          .sort(sortFields)
+          .limit(limitNum)
+          .project(projection);
+        const products = await cursor.toArray();
+        res.status(200).json(products);
+      } catch (error) {
+        res.status(500).send({ message: 'Failed to fetch products', error });
       }
     });
 
