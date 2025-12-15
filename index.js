@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const admin = require('firebase-admin');
 
 // Express App Initialization
@@ -237,7 +237,7 @@ async function run() {
     });
 
     // ---------- Products Collection APIs ----------
-    // Get all listings & specific user's listings by email using query params (Public)
+    // Get all products & specific user's products by email using query params (Public)
     app.get('/products', async (req, res) => {
       try {
         const email = req.query.email;
@@ -276,6 +276,18 @@ async function run() {
         res.status(200).json(products);
       } catch (error) {
         res.status(500).send({ message: 'Failed to fetch products', error });
+      }
+    });
+
+    // Get specific product details (Protected)
+    app.get('/products/:id', verifyFirebaseToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const product = await productsCollection.findOne(query);
+        res.status(200).json(product);
+      } catch (error) {
+        res.status(500).send({ message: 'Failed to fetch product', error });
       }
     });
 
