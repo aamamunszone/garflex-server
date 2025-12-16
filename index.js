@@ -44,6 +44,7 @@ const client = new MongoClient(uri, {
 let database;
 let usersCollection;
 let productsCollection;
+let ordersCollection;
 
 // ========== MIDDLEWARE: VERIFY FIREBASE TOKEN ==========
 const verifyFirebaseToken = async (req, res, next) => {
@@ -107,6 +108,45 @@ const verifyFirebaseToken = async (req, res, next) => {
   }
 };
 
+// ========== MIDDLEWARE: VERIFY ADMIN ROLE ==========
+const verifyAdmin = async (req, res, next) => {
+  const email = req.user.email;
+  const user = await usersCollection.findOne({ email });
+  if (user.role !== 'Admin') {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden: Admin access required',
+    });
+  }
+  next();
+};
+
+// ========== MIDDLEWARE: VERIFY MANAGER ROLE ==========
+const verifyManager = async (req, res, next) => {
+  const email = req.user.email;
+  const user = await usersCollection.findOne({ email });
+  if (user.role !== 'Manager') {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden: Manager access required',
+    });
+  }
+  next();
+};
+
+// ========== MIDDLEWARE: VERIFY BUYER ROLE ==========
+const verifyBuyer = async (req, res, next) => {
+  const email = req.user.email;
+  const user = await usersCollection.findOne({ email });
+  if (user.role !== 'Buyer') {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden: Buyer access required',
+    });
+  }
+  next();
+};
+
 // ========== HEALTH CHECK ==========
 // Health Check Route (Public)
 app.get('/', (req, res) => {
@@ -130,6 +170,7 @@ async function run() {
     database = client.db('GarFlexDB');
     usersCollection = database.collection('users');
     productsCollection = database.collection('products');
+    ordersCollection = database.collection('orders');
 
     // ========== ROUTES START ==========
 
@@ -140,11 +181,11 @@ async function run() {
         // User object
         const userData = req.body;
         // Insert user into database
-        const result = await usersCollection.insertOne(userData);
+        const user = await usersCollection.insertOne(userData);
         res.status(201).json({
           success: true,
           message: 'User registered successfully via Email/Password Auth.',
-          data: result,
+          data: user,
         });
       } catch (error) {
         console.error('User registration error:', error?.message);
@@ -288,6 +329,25 @@ async function run() {
         res.status(200).json(product);
       } catch (error) {
         res.status(500).send({ message: 'Failed to fetch product', error });
+      }
+    });
+
+    // ---------- Orders Collection APIs ----------
+    // Create new order
+    app.post('/orders', verifyFirebaseToken, verifyBuyer, async (req, res) => {
+      try {
+        const orderData = req.body;
+        const order = await ordersCollection.insertOne(orderData);
+
+        res.status(201).json({
+          success: true,
+          data: order,
+        });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to create order',
+        });
       }
     });
 
