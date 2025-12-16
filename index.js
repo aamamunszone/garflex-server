@@ -277,6 +277,17 @@ async function run() {
       }
     });
 
+    // GET logged-in user from DB (Protected)
+    app.get('/users/me', verifyFirebaseToken, async (req, res) => {
+      const email = req.user.email;
+      const user = await usersCollection.findOne({ email });
+
+      res.json({
+        success: true,
+        data: user,
+      });
+    });
+
     // ---------- Products Collection APIs ----------
     // Get all products & specific user's products by email using query params (Public)
     app.get('/products', async (req, res) => {
