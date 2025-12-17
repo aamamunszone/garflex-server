@@ -612,6 +612,90 @@ async function run() {
       }
     );
 
+    // Add Product (Manager Only - Protected)
+    app.post(
+      '/manager/products',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const {
+            name,
+            shortDescription,
+            longDescription,
+            category,
+            price,
+            availableQuantity,
+            minimumOrderQuantity,
+            images,
+            demoVideo,
+            paymentOptions,
+            showOnHomePage,
+          } = req.body;
+
+          // Validation
+          if (
+            !name ||
+            !shortDescription ||
+            !longDescription ||
+            !category ||
+            !price ||
+            !availableQuantity ||
+            !minimumOrderQuantity ||
+            !images ||
+            !Array.isArray(images) ||
+            images.length === 0 ||
+            !paymentOptions ||
+            !Array.isArray(paymentOptions) ||
+            paymentOptions.length === 0
+          ) {
+            return res.status(400).json({
+              success: false,
+              message: 'Missing required fields or invalid data format',
+            });
+          }
+
+          // Create product object
+          const newProduct = {
+            name: name.trim(),
+            shortDescription: shortDescription.trim(),
+            longDescription: longDescription.trim(),
+            category: category.trim(),
+            price: parseFloat(price),
+            availableQuantity: parseInt(availableQuantity),
+            minimumOrderQuantity: parseInt(minimumOrderQuantity),
+            images: images,
+            demoVideo: demoVideo?.trim() || '',
+            paymentOptions: paymentOptions,
+            showOnHomePage: showOnHomePage || false,
+            createdBy: req.user.email,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+
+          // Insert into database
+          const result = await productsCollection.insertOne(newProduct);
+
+          res.status(201).json({
+            success: true,
+            message: 'Product created successfully!',
+            data: {
+              productId: result.insertedId,
+            },
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to create product',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error.message
+                : undefined,
+          });
+        }
+      }
+    );
+
     // ---------- Orders Collection APIs ----------
     // Create new order (Buyer Only - Protected)
     app.post(
