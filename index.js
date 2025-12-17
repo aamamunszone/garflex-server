@@ -639,6 +639,115 @@ async function run() {
       }
     );
 
+    // GET All Orders (Admin Only - Protected)
+    app.get(
+      '/admin/all-orders',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const result = await ordersCollection
+            .find()
+            .sort({ createdAt: -1 })
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch orders',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // PATCH Update Order Status (Admin Only - Protected)
+    app.patch(
+      '/admin/orders/:id/status',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const { orderStatus } = req.body;
+        const query = { _id: new ObjectId(id) };
+
+        const updatedDoc = {
+          $set: {
+            orderStatus: orderStatus,
+            updatedAt: new Date(),
+          },
+        };
+
+        try {
+          const result = await ordersCollection.updateOne(query, updatedDoc);
+
+          if (result.matchedCount === 0) {
+            return res.status(404).json({
+              success: false,
+              message: 'Order not found',
+            });
+          }
+
+          res.status(200).json({
+            success: true,
+            message: `Order status updated to ${orderStatus}`,
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update order status',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // GET Single Order Details (Admin Only - Protected)
+    app.get(
+      '/admin/orders/:id',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        try {
+          const query = { _id: new ObjectId(id) };
+          const result = await ordersCollection.findOne(query);
+
+          if (!result) {
+            return res.status(404).json({
+              success: false,
+              message: 'Order not found',
+            });
+          }
+
+          res.status(200).json({
+            success: true,
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch order details',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
     // ========== ROUTES END ==========
 
     // Send a ping to confirm a successful connection
