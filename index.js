@@ -279,14 +279,185 @@ async function run() {
 
     // GET logged-in user from DB (Protected)
     app.get('/users/me', verifyFirebaseToken, async (req, res) => {
-      const email = req.user.email;
-      const user = await usersCollection.findOne({ email });
+      try {
+        const email = req.user.email;
+        const user = await usersCollection.findOne({ email });
 
-      res.json({
-        success: true,
-        data: user,
-      });
+        res.status(200).json({
+          success: true,
+          data: user,
+        });
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch user',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
+        });
+      }
     });
+
+    // GET all users from DB for Admin Only (Protected)
+    app.get(
+      '/admin/manage-users',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const users = await usersCollection
+            .find()
+            .sort({ createdAt: -1 })
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: users,
+            count: users.length,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch users',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // Update user role & status (Protected)
+    app.patch(
+      '/admin/users/role/:id',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const query = { _id: new ObjectId(id) };
+
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid user ID format',
+            });
+          }
+
+          const userData = req.body;
+          const role = userData.role;
+          const status = userData.status;
+          const suspendReason = userData.suspendReason;
+
+          const updateDoc = {
+            $set: {
+              updatedAt: new Date(),
+            },
+          };
+
+          // Add role to update if provided
+          if (role) {
+            updateDoc.$set.role = role;
+          }
+
+          // Add status to update if provided
+          if (status) {
+            updateDoc.$set.status = status;
+          }
+
+          // Add suspend reason if suspending
+          if (status === 'Suspended' && suspendReason) {
+            updateDoc.$set.suspendReason = suspendReason;
+          }
+
+          // Remove suspend reason if approving or setting to pending
+          if (status === 'Approved' || status === 'Pending') {
+            updateDoc.$unset = { suspendReason: '' };
+          }
+
+          const result = await usersCollection.updateOne(query, updateDoc);
+
+          if (result.matchedCount === 0) {
+            return res.status(404).json({
+              success: false,
+              message: 'User not found',
+            });
+          }
+
+          res.status(200).json({
+            success: true,
+            message: 'User updated successfully',
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update user',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // Delete user from DB (Protected)
+    app.delete(
+      '/admin/users/:id',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const query = { _id: new ObjectId(id) };
+
+          // Validate ObjectId
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid user ID format',
+            });
+          }
+
+          // Prevent admin from deleting themselves
+          if (req.user.email) {
+            const userToDelete = await usersCollection.findOne(query);
+
+            if (userToDelete?.email === req.user.email) {
+              return res.status(403).json({
+                success: false,
+                message: 'You cannot delete your own account',
+              });
+            }
+          }
+
+          const result = await usersCollection.deleteOne(query);
+
+          if (result.deletedCount === 0) {
+            return res.status(404).json({
+              success: false,
+              message: 'User not found',
+            });
+          }
+
+          res.status(200).json({
+            success: true,
+            message: 'User deleted successfully',
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to delete user',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
 
     // ---------- Products Collection APIs ----------
     // Get all products & specific user's products by email using query params (Public)
@@ -301,7 +472,12 @@ async function run() {
         const products = await cursor.toArray();
         res.status(200).json(products);
       } catch (error) {
-        res.status(500).send({ message: 'Failed to fetch products', error });
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch products',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
+        });
       }
     });
 
@@ -327,7 +503,12 @@ async function run() {
         const products = await cursor.toArray();
         res.status(200).json(products);
       } catch (error) {
-        res.status(500).send({ message: 'Failed to fetch products', error });
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch products',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
+        });
       }
     });
 
@@ -339,28 +520,41 @@ async function run() {
         const product = await productsCollection.findOne(query);
         res.status(200).json(product);
       } catch (error) {
-        res.status(500).send({ message: 'Failed to fetch product', error });
+        res.status(500).json({
+          success: false,
+          message: 'Failed to fetch product',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
+        });
       }
     });
 
     // ---------- Orders Collection APIs ----------
     // Create new order
-    app.post('/orders', verifyFirebaseToken, verifyBuyer, async (req, res) => {
-      try {
-        const orderData = req.body;
-        const order = await ordersCollection.insertOne(orderData);
-
-        res.status(201).json({
-          success: true,
-          data: order,
-        });
-      } catch (error) {
-        res.status(500).json({
-          success: false,
-          message: 'Failed to create order',
-        });
+    app.post(
+      '/buyer/orders',
+      verifyFirebaseToken,
+      verifyBuyer,
+      async (req, res) => {
+        try {
+          const orderData = req.body;
+          const order = await ordersCollection.insertOne(orderData);
+          res.status(201).json({
+            success: true,
+            data: order,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to create order',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
       }
-    });
+    );
 
     // ========== ROUTES END ==========
 
