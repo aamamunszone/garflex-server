@@ -297,7 +297,7 @@ async function run() {
       }
     });
 
-    // GET all users from DB for Admin Only (Protected)
+    // GET all users from DB (Admin Only - Protected)
     app.get(
       '/admin/manage-users',
       verifyFirebaseToken,
@@ -327,7 +327,7 @@ async function run() {
       }
     );
 
-    // Update user role & status (Protected)
+    // Update user role & status (Admin Only - Protected)
     app.patch(
       '/admin/users/role/:id',
       verifyFirebaseToken,
@@ -402,7 +402,7 @@ async function run() {
       }
     );
 
-    // Delete user from DB (Protected)
+    // Delete user from DB (Admin Only - Protected)
     app.delete(
       '/admin/users/:id',
       verifyFirebaseToken,
@@ -529,8 +529,91 @@ async function run() {
       }
     });
 
+    // GET All Products (Admin Only - Protected)
+    app.get(
+      '/admin/all-products',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const result = await productsCollection.find().toArray();
+          res.status(200).json({
+            success: true,
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch products',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // PATCH Update Product (Admin Only - Protected)
+    app.patch(
+      '/admin/products/:id',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        const updatedProduct = req.body;
+        const updatedDoc = {
+          $set: updatedProduct,
+        };
+        try {
+          const result = await productsCollection.updateOne(query, updatedDoc);
+          res.status(200).json({
+            success: true,
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update products',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // DELETE Product (Admin Only - Protected)
+    app.delete(
+      '/admin/products/:id',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        try {
+          const result = await productsCollection.deleteOne(query);
+          res.status(200).json({
+            success: true,
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to delete product',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
     // ---------- Orders Collection APIs ----------
-    // Create new order
+    // Create new order (Buyer Only - Protected)
     app.post(
       '/buyer/orders',
       verifyFirebaseToken,
