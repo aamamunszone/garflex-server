@@ -696,6 +696,116 @@ async function run() {
       }
     );
 
+    // GET Managers Product (Manager Only - Protected)
+    app.get(
+      '/manager/my-products',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const email = req.user.email;
+          const query = { createdBy: email };
+
+          const products = await productsCollection
+            .find(query)
+            .sort({ createdAt: -1 })
+            .toArray();
+
+          res.json({
+            success: true,
+            data: products,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch products',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // DELETE Managers Product (Manager Only - Protected)
+    app.delete(
+      '/manager/products/:id',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const email = req.user.email;
+
+          const query = { _id: new ObjectId(id), createdBy: email };
+          const result = await productsCollection.deleteOne(query);
+
+          if (result.deletedCount === 1) {
+            res.json({ success: true, message: 'Product deleted' });
+          } else {
+            res.status(404).json({
+              success: false,
+              message: 'Product not found or unauthorized',
+            });
+          }
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to delete product',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // UPDATE Managers Product (Manager Only - Protected)
+    app.patch(
+      '/manager/products/:id',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const email = req.user.email;
+          const updatedData = req.body;
+
+          const query = { _id: new ObjectId(id), createdBy: email };
+
+          const updateDoc = {
+            $set: updatedData,
+          };
+
+          const result = await productsCollection.updateOne(query, updateDoc);
+
+          if (result.matchedCount === 1) {
+            res.json({
+              success: true,
+              message: 'Product updated successfully',
+              data: result,
+            });
+          } else {
+            res.status(404).json({
+              success: false,
+              message: 'Product not found or unauthorized to update',
+            });
+          }
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update product',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error.message
+                : undefined,
+          });
+        }
+      }
+    );
+
     // ---------- Orders Collection APIs ----------
     // Create new order (Buyer Only - Protected)
     app.post(
