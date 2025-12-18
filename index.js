@@ -1162,6 +1162,43 @@ async function run() {
       }
     );
 
+    // GET Specific Order Tracking (Buyer Only - Protected)
+    app.get(
+      '/buyer/track-order/:id',
+      verifyFirebaseToken,
+      verifyBuyer,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const email = req.user.email;
+
+          const query = { _id: new ObjectId(id), userEmail: email };
+          const order = await ordersCollection.findOne(query);
+
+          if (!order) {
+            return res.status(404).json({
+              success: false,
+              message: 'Order not found',
+            });
+          }
+
+          res.status(200).json({
+            success: true,
+            data: order,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update tracking info',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
     // ========== ROUTES END ==========
 
     // Send a ping to confirm a successful connection
