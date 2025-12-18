@@ -486,26 +486,49 @@ async function run() {
       }
     });
 
-    // Get recent 6 products (Public)
+    // Get recent 6 products with priority for showOnHomePage (Public)
     app.get('/products/recent', async (req, res) => {
       try {
-        const sortFields = { createdAt: -1 };
         const limitNum = 6;
-        const projection = {
-          name: 1,
-          shortDescription: 1,
-          category: 1,
-          price: 1,
-          availableQuantity: 1,
-          minimumOrderQuantity: 1,
-          images: 1,
-        };
-        const cursor = productsCollection
-          .find()
-          .sort(sortFields)
-          .limit(limitNum)
-          .project(projection);
-        const products = await cursor.toArray();
+
+        const pipeline = [
+          {
+            $addFields: {
+              homePriority: {
+                $cond: {
+                  if: { $eq: ['$showOnHomePage', true] },
+                  then: 1,
+                  else: 0,
+                },
+              },
+            },
+          },
+          {
+            $sort: {
+              homePriority: -1,
+              createdAt: -1,
+            },
+          },
+          {
+            $limit: limitNum,
+          },
+          {
+            $project: {
+              name: 1,
+              shortDescription: 1,
+              category: 1,
+              price: 1,
+              availableQuantity: 1,
+              minimumOrderQuantity: 1,
+              images: 1,
+              showOnHomePage: 1,
+              createdAt: 1,
+            },
+          },
+        ];
+
+        const products = await productsCollection.aggregate(pipeline).toArray();
+
         res.status(200).json(products);
       } catch (error) {
         res.status(500).json({
