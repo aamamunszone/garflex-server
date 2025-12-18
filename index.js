@@ -949,7 +949,7 @@ async function run() {
       verifyManager,
       async (req, res) => {
         try {
-          const query = { orderStatus: 'Pending', userEmail: req.user.email };
+          const query = { orderStatus: 'Pending' };
           const orders = await ordersCollection
             .find(query)
             .sort({ orderDate: -1 })
@@ -1024,7 +1024,7 @@ async function run() {
       verifyManager,
       async (req, res) => {
         try {
-          const query = { orderStatus: 'Approved', userEmail: req.user.email };
+          const query = { orderStatus: 'Approved' };
           const orders = await ordersCollection
             .find(query)
             .sort({ approvedAt: -1 })
