@@ -1087,6 +1087,81 @@ async function run() {
       }
     );
 
+    // GET My Orders (Buyer Only - Protected)
+    app.get(
+      '/buyer/my-orders',
+      verifyFirebaseToken,
+      verifyBuyer,
+      async (req, res) => {
+        try {
+          const email = req.user.email;
+          const query = { userEmail: email };
+          const orders = await ordersCollection
+            .find(query)
+            .sort({ createdAt: -1 })
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: orders,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update tracking info',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // CANCEL Order (Buyer Only - Protected)
+    app.delete(
+      '/buyer/orders/:id',
+      verifyFirebaseToken,
+      verifyBuyer,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const email = req.user.email;
+
+          const query = {
+            _id: new ObjectId(id),
+            userEmail: email,
+            orderStatus: 'Pending',
+          };
+
+          const result = await ordersCollection.deleteOne(query);
+
+          if (result.deletedCount === 0) {
+            return res.status(400).json({
+              success: false,
+              message:
+                'Cannot cancel. Order is already processed or not found.',
+            });
+          }
+
+          res.status(200).json({
+            success: true,
+            message: 'Order cancelled successfully!',
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update tracking info',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
     // ========== ROUTES END ==========
 
     // Send a ping to confirm a successful connection
