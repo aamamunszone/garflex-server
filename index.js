@@ -1017,6 +1017,76 @@ async function run() {
       }
     );
 
+    // GET Approved Orders (Manager Only - Protected)
+    app.get(
+      '/manager/approved-orders',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const query = { orderStatus: 'Approved', userEmail: req.user.email };
+          const orders = await ordersCollection
+            .find(query)
+            .sort({ approvedAt: -1 })
+            .toArray();
+          res.status(200).json({
+            success: true,
+            data: orders,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch approved orders',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // UPDATE Tracking Info (Manager Only - Protected)
+    app.patch(
+      '/manager/orders/:id/tracking',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const newTracking = {
+            ...req.body,
+            updatedAt: new Date(),
+          };
+
+          const query = { _id: new ObjectId(id) };
+          const updateDoc = {
+            $push: { trackingHistory: newTracking },
+            $set: {
+              currentStatus: req.body.status,
+              lastTrackingUpdate: new Date(),
+            },
+          };
+
+          const result = await ordersCollection.updateOne(query, updateDoc);
+          res.status(200).json({
+            success: true,
+            message: 'Tracking updated!',
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update tracking info',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
     // ========== ROUTES END ==========
 
     // Send a ping to confirm a successful connection
