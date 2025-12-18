@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const admin = require('firebase-admin');
 
@@ -45,6 +46,8 @@ let database;
 let usersCollection;
 let productsCollection;
 let ordersCollection;
+let paymentsCollection;
+let parcelsCollection;
 
 // ========== MIDDLEWARE: VERIFY FIREBASE TOKEN ==========
 const verifyFirebaseToken = async (req, res, next) => {
@@ -164,13 +167,15 @@ app.get('/', (req, res) => {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
 
     // Initialize Database & Collections
     database = client.db('GarFlexDB');
     usersCollection = database.collection('users');
     productsCollection = database.collection('products');
     ordersCollection = database.collection('orders');
+    paymentsCollection = database.collection('payments');
+    parcelsCollection = database.collection('parcels');
 
     // ========== ROUTES START ==========
 
@@ -1199,13 +1204,118 @@ async function run() {
       }
     );
 
+    // ---------- Payments Collection APIs ----------
+    // Payment Session Create (POST)
+    app.post(
+      '/create-checkout-session',
+      verifyFirebaseToken,
+      async (req, res) => {
+        try {
+          const { cost, parcelId, senderEmail, productName, orderMetadata } =
+            req.body;
+
+          // Stripe expects amount in cents
+          const amount = Math.round(parseFloat(cost) * 100);
+
+          const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [
+              {
+                price_data: {
+                  currency: 'usd',
+                  unit_amount: amount,
+                  product_data: { name: productName || 'GarFlex Booking' },
+                },
+                quantity: 1,
+              },
+            ],
+            customer_email: senderEmail,
+            mode: 'payment',
+            // Metadata use kore database update logic handle kora hoy
+            metadata: {
+              parcelId: parcelId,
+              buyerEmail: senderEmail,
+              orderData: JSON.stringify(orderMetadata), // Optional: Save extra info
+            },
+            success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+          });
+
+          res.send({ url: session.url });
+        } catch (error) {
+          res.status(500).send({ error: error.message });
+        }
+      }
+    );
+
+    // Payment Verification & DB Update (PATCH)
+    app.patch('/payment-success', verifyFirebaseToken, async (req, res) => {
+      const { session_id } = req.query;
+      try {
+        const session = await stripe.checkout.sessions.retrieve(session_id);
+
+        if (session.payment_status === 'paid') {
+          const transactionId = session.payment_intent;
+          const parcelId = session.metadata.parcelId;
+
+          // Duplicate payment check
+          const paymentExist = await paymentsCollection.findOne({
+            transactionId,
+          });
+          if (paymentExist) return res.send({ success: true, transactionId });
+
+          // 1. Update Parcel Status
+          await parcelsCollection.updateOne(
+            { _id: new ObjectId(parcelId) },
+            {
+              $set: {
+                paymentStatus: 'paid',
+                deliveryStatus: 'pending-pickup',
+                transactionId: transactionId,
+                paidAt: new Date(),
+              },
+            }
+          );
+
+          // 2. Insert into Payments Collection
+          const payment = {
+            amount: session.amount_total / 100,
+            customerEmail:
+              session.customer_email || session.metadata.buyerEmail,
+            parcelId: parcelId,
+            transactionId: transactionId,
+            paidAt: new Date(),
+            status: 'completed',
+          };
+          await paymentsCollection.insertOne(payment);
+
+          res.send({ success: true, transactionId });
+        }
+      } catch (error) {
+        res.status(500).send({ success: false });
+      }
+    });
+
+    // User Specific Payment History (GET)
+    app.get('/payments', verifyFirebaseToken, async (req, res) => {
+      const email = req.query.email;
+      if (email !== req.decoded_email)
+        return res.status(403).send({ message: 'Forbidden' });
+
+      const result = await paymentsCollection
+        .find({ customerEmail: email })
+        .sort({ paidAt: -1 })
+        .toArray();
+      res.send(result);
+    });
+
     // ========== ROUTES END ==========
 
     // Send a ping to confirm a successful connection
-    await client.db('admin').command({ ping: 1 });
-    console.log(
-      'Pinged your deployment. You successfully connected to MongoDB!'
-    );
+    // await client.db('admin').command({ ping: 1 });
+    // console.log(
+    //   'Pinged your deployment. You successfully connected to MongoDB!'
+    // );
   } catch (error) {
     console.error('MongoDB connection error:', error);
     process.exit(1);

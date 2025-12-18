@@ -1,3 +1,4 @@
 node_modules
 .env
 garflex-firebase-adminsdk.json
+.vercel
