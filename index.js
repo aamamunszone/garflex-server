@@ -942,6 +942,81 @@ async function run() {
       }
     );
 
+    // GET Pending Orders (Manager Only - Protected)
+    app.get(
+      '/manager/pending-orders',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const query = { orderStatus: 'Pending', userEmail: req.user.email };
+          const orders = await ordersCollection
+            .find(query)
+            .sort({ orderDate: -1 })
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: orders,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch pending orders',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // UPDATE Order Status (Manager Only - Protected)
+    app.patch(
+      '/manager/orders/:id/status',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
+          const { orderStatus } = req.body;
+
+          const query = { _id: new ObjectId(id) };
+
+          const updateFields = {
+            orderStatus: orderStatus,
+            processedAt: new Date(),
+          };
+
+          if (orderStatus === 'Approved') {
+            updateFields.approvedAt = new Date();
+          } else if (orderStatus === 'Rejected') {
+            updateFields.rejectedAt = new Date();
+          }
+
+          const updateDoc = { $set: updateFields };
+
+          const result = await ordersCollection.updateOne(query, updateDoc);
+
+          res.status(200).json({
+            success: true,
+            message: `Order ${orderStatus} successfully`,
+            data: result,
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update order status',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
     // ========== ROUTES END ==========
 
     // Send a ping to confirm a successful connection
