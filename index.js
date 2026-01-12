@@ -892,12 +892,63 @@ async function run() {
       async (req, res) => {
         try {
           const orderData = req.body;
+          const idempotencyKey = req.headers['idempotency-key'];
+
+          console.log('=== CREATING ORDER ===');
+          console.log('Order data:', orderData);
+          console.log('Idempotency key:', idempotencyKey);
+
+          // For Stripe payments, check if order already exists by payment details
+          if (
+            orderData.paymentMethod === 'PayFirst' &&
+            orderData.paymentDetails?.transactionId
+          ) {
+            const existingOrder = await ordersCollection.findOne({
+              'paymentDetails.transactionId':
+                orderData.paymentDetails.transactionId,
+            });
+
+            if (existingOrder) {
+              console.log('Order already exists for this payment');
+              return res.status(200).json({
+                success: true,
+                data: existingOrder,
+                message: 'Order already exists for this payment',
+              });
+            }
+          }
+
+          // For idempotency key (if provided)
+          if (idempotencyKey) {
+            const existingOrder = await ordersCollection.findOne({
+              idempotencyKey: idempotencyKey,
+            });
+
+            if (existingOrder) {
+              console.log('Order already exists for this idempotency key');
+              return res.status(200).json({
+                success: true,
+                data: existingOrder,
+                message: 'Order already processed',
+              });
+            }
+
+            // Add idempotency key to order data
+            orderData.idempotencyKey = idempotencyKey;
+          }
+
+          // Add creation timestamp
+          orderData.createdAt = new Date();
+
           const order = await ordersCollection.insertOne(orderData);
+          console.log('Order created successfully:', order.insertedId);
+
           res.status(201).json({
             success: true,
-            data: order,
+            data: { ...orderData, _id: order.insertedId },
           });
         } catch (error) {
+          console.error('Order creation error:', error);
           res.status(500).json({
             success: false,
             message: 'Failed to create order',
@@ -1284,11 +1335,119 @@ async function run() {
       verifyBuyer,
       async (req, res) => {
         try {
+          console.log('=== CREATE CHECKOUT SESSION ===');
+          console.log('Request body:', req.body);
+          console.log('User email:', req.decoded_email);
+
+          // Validate required environment variables
+          if (!process.env.STRIPE_SECRET_KEY) {
+            console.error('STRIPE_SECRET_KEY is not configured');
+            return res.status(500).json({
+              success: false,
+              message: 'Payment service not configured',
+            });
+          }
+
+          if (!process.env.CLIENT_URL) {
+            console.error('CLIENT_URL is not configured');
+            return res.status(500).json({
+              success: false,
+              message: 'Client URL not configured',
+            });
+          }
+
+          // Validate required request data
           const { cost, parcelId, customerEmail, productName, orderMetadata } =
             req.body;
 
+          if (!cost || !parcelId || !customerEmail || !orderMetadata) {
+            console.error('Missing required fields:', {
+              cost: !!cost,
+              parcelId: !!parcelId,
+              customerEmail: !!customerEmail,
+              orderMetadata: !!orderMetadata,
+            });
+            return res.status(400).json({
+              success: false,
+              message: 'Missing required payment information',
+            });
+          }
+
+          // Validate cost is a valid number
+          const numericCost = parseFloat(cost);
+          if (isNaN(numericCost) || numericCost <= 0) {
+            console.error('Invalid cost value:', cost);
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid cost amount',
+            });
+          }
+
+          // Validate email format
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(customerEmail)) {
+            console.error('Invalid email format:', customerEmail);
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid email format',
+            });
+          }
+
+          // Validate orderMetadata is an object
+          if (typeof orderMetadata !== 'object' || orderMetadata === null) {
+            console.error('Invalid orderMetadata:', typeof orderMetadata);
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid order metadata',
+            });
+          }
+
           // Stripe expects amount in cents
-          const amount = Math.round(parseFloat(cost) * 100);
+          const amount = Math.round(numericCost * 100);
+          console.log('Calculated amount in cents:', amount);
+
+          // Create Stripe checkout session
+          console.log('Creating Stripe session...');
+
+          // Split order data into multiple metadata fields to respect Stripe's 500-char limit
+          const metadata = {
+            parcelId: parcelId,
+            buyerEmail: customerEmail,
+            // Essential order info (split into multiple fields)
+            userId: orderMetadata.userId,
+            userEmail: orderMetadata.userEmail,
+            userName: orderMetadata.userName.substring(0, 100), // Truncate if too long
+            productId: orderMetadata.productId,
+            productTitle: orderMetadata.productTitle.substring(0, 100), // Truncate if too long
+            productPrice: orderMetadata.productPrice.toString(),
+            productCategory: orderMetadata.productCategory || 'General',
+            orderQuantity: orderMetadata.orderQuantity.toString(),
+            orderPrice: orderMetadata.orderPrice.toString(),
+            contactNumber: orderMetadata.contactNumber,
+            paymentMethod: orderMetadata.paymentMethod,
+            orderDate: orderMetadata.orderDate,
+          };
+
+          // Store delivery address and notes separately (truncate if needed)
+          if (orderMetadata.deliveryAddress) {
+            metadata.deliveryAddress = orderMetadata.deliveryAddress.substring(
+              0,
+              400
+            );
+          }
+          if (orderMetadata.additionalNotes) {
+            metadata.additionalNotes = orderMetadata.additionalNotes.substring(
+              0,
+              400
+            );
+          }
+
+          console.log(
+            'Metadata character counts:',
+            Object.entries(metadata).map(
+              ([key, value]) => `${key}: ${value?.length || 0}`
+            )
+          );
 
           const session = await stripe.checkout.sessions.create({
             payment_method_types: ['card'],
@@ -1304,24 +1463,58 @@ async function run() {
             ],
             customer_email: customerEmail,
             mode: 'payment',
-
-            metadata: {
-              parcelId: parcelId,
-              buyerEmail: customerEmail,
-              orderData: JSON.stringify(orderMetadata),
-            },
+            metadata: metadata,
             success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
             cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
           });
 
-          res.send({ url: session.url });
+          console.log('Stripe session created successfully:', session.id);
+          res.json({
+            success: true,
+            url: session.url,
+            sessionId: session.id,
+          });
         } catch (error) {
+          console.error('=== CHECKOUT SESSION ERROR ===');
+          console.error('Error details:', error);
+          console.error('Error message:', error.message);
+          console.error('Error stack:', error.stack);
+
+          // Handle specific Stripe errors
+          if (error.type === 'StripeCardError') {
+            return res.status(400).json({
+              success: false,
+              message: 'Card error: ' + error.message,
+            });
+          } else if (error.type === 'StripeInvalidRequestError') {
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid request: ' + error.message,
+            });
+          } else if (error.type === 'StripeAPIError') {
+            return res.status(500).json({
+              success: false,
+              message: 'Stripe API error occurred',
+            });
+          } else if (error.type === 'StripeConnectionError') {
+            return res.status(500).json({
+              success: false,
+              message: 'Network error occurred',
+            });
+          } else if (error.type === 'StripeAuthenticationError') {
+            return res.status(500).json({
+              success: false,
+              message: 'Authentication error with payment service',
+            });
+          }
+
+          // Generic error response
           res.status(500).json({
             success: false,
-            message: 'Failed to update tracking info',
+            message: 'Failed to create payment session',
             error:
               process.env.NODE_ENV === 'development'
-                ? error?.message
+                ? error.message
                 : undefined,
           });
         }
@@ -1335,48 +1528,252 @@ async function run() {
       verifyBuyer,
       async (req, res) => {
         const { session_id } = req.query;
+
         try {
+          console.log('=== PAYMENT VERIFICATION ===');
+          console.log('Session ID:', session_id);
+          console.log('User email:', req.decoded_email);
+
+          // Validate session_id
+          if (!session_id) {
+            console.error('No session_id provided');
+            return res.status(400).json({
+              success: false,
+              message: 'Session ID is required',
+            });
+          }
+
+          // Retrieve session from Stripe
+          console.log('Retrieving Stripe session...');
           const session = await stripe.checkout.sessions.retrieve(session_id);
+          console.log('Session payment status:', session.payment_status);
+          console.log('Session metadata:', session.metadata);
 
           if (session.payment_status === 'paid') {
             const transactionId = session.payment_intent;
             const parcelId = session.metadata.parcelId;
+
+            if (!parcelId) {
+              console.error('No parcelId in session metadata');
+              return res.status(400).json({
+                success: false,
+                message: 'Invalid session metadata',
+              });
+            }
+
             const trackingId = `#GF-${parcelId.slice(-16).toUpperCase()}`;
+            console.log('Generated tracking ID:', trackingId);
 
             // Duplicate payment check
+            console.log('Checking for duplicate payment...');
             const paymentExist = await paymentsCollection.findOne({
               transactionId,
             });
-            if (paymentExist) return res.send({ success: true, transactionId });
 
-            // 1. Update Parcel Status
-            await ordersCollection.updateOne(
-              { _id: new ObjectId(parcelId) },
-              {
-                $set: {
-                  paymentStatus: 'Paid',
-                  trackingId: trackingId,
-                  paidAt: new Date(),
-                },
-              }
+            if (paymentExist) {
+              console.log(
+                'Payment already exists, returning existing transaction'
+              );
+
+              // Also check if order exists
+              const existingOrder = await ordersCollection.findOne({
+                _id: new ObjectId(paymentExist.orderId),
+              });
+
+              return res.json({
+                success: true,
+                transactionId,
+                orderId: paymentExist.orderId,
+                trackingId: existingOrder?.trackingId,
+                message: 'Payment already processed',
+              });
+            }
+
+            // Additional check: Look for existing order with same payment intent
+            const existingOrderByPayment = await ordersCollection.findOne({
+              'paymentDetails.transactionId': transactionId,
+            });
+
+            if (existingOrderByPayment) {
+              console.log('Order already exists for this payment intent');
+              return res.json({
+                success: true,
+                transactionId,
+                orderId: existingOrderByPayment._id.toString(),
+                trackingId: existingOrderByPayment.trackingId,
+                message: 'Order already exists for this payment',
+              });
+            }
+
+            // Reconstruct order data from metadata fields
+            let orderData;
+            try {
+              orderData = {
+                userId: session.metadata.userId,
+                userEmail: session.metadata.userEmail,
+                userName: session.metadata.userName,
+                productId: session.metadata.productId,
+                productTitle: session.metadata.productTitle,
+                productPrice: parseFloat(session.metadata.productPrice),
+                productCategory: session.metadata.productCategory || 'General',
+                orderQuantity: parseInt(session.metadata.orderQuantity),
+                orderPrice: parseFloat(session.metadata.orderPrice),
+                contactNumber: session.metadata.contactNumber,
+                deliveryAddress: session.metadata.deliveryAddress || '',
+                additionalNotes: session.metadata.additionalNotes || '',
+                paymentMethod: session.metadata.paymentMethod,
+                orderDate: session.metadata.orderDate,
+              };
+              console.log('Reconstructed order data:', orderData);
+            } catch (parseError) {
+              console.error(
+                'Failed to reconstruct order data from metadata:',
+                parseError
+              );
+              return res.status(400).json({
+                success: false,
+                message: 'Invalid order data in session metadata',
+              });
+            }
+
+            // Validate required order data fields
+            const requiredFields = [
+              'userId',
+              'userEmail',
+              'userName',
+              'productId',
+              'productTitle',
+              'productPrice',
+              'orderQuantity',
+              'orderPrice',
+            ];
+            const missingFields = requiredFields.filter(
+              (field) => !orderData[field]
             );
 
+            if (missingFields.length > 0) {
+              console.error('Missing required order fields:', missingFields);
+              return res.status(400).json({
+                success: false,
+                message: `Missing required order fields: ${missingFields.join(
+                  ', '
+                )}`,
+              });
+            }
+
+            // 1. Create Order in Database
+            console.log('Creating order in database...');
+            const newOrder = {
+              userId: orderData.userId,
+              userEmail: orderData.userEmail,
+              userName: orderData.userName,
+              productId: orderData.productId,
+              productTitle: orderData.productTitle,
+              productPrice: orderData.productPrice,
+              productCategory: orderData.productCategory || 'General',
+              orderQuantity: orderData.orderQuantity,
+              orderPrice: orderData.orderPrice,
+              contactNumber: orderData.contactNumber,
+              deliveryAddress: orderData.deliveryAddress,
+              additionalNotes: orderData.additionalNotes || '',
+              paymentMethod: orderData.paymentMethod,
+              paymentStatus: 'Paid',
+              orderStatus: 'Pending',
+              trackingId: trackingId,
+              orderDate: new Date(orderData.orderDate),
+              paidAt: new Date(),
+              createdAt: new Date(),
+              // Add payment details for duplicate prevention
+              paymentDetails: {
+                transactionId: transactionId,
+                sessionId: session_id,
+                paymentIntentId: session.payment_intent,
+              },
+            };
+
+            const orderResult = await ordersCollection.insertOne(newOrder);
+            const orderId = orderResult.insertedId;
+            console.log('Order created with ID:', orderId);
+
             // 2. Insert into Payments Collection
+            console.log('Creating payment record...');
             const payment = {
               amount: session.amount_total / 100,
               customerEmail:
                 session.customer_email || session.metadata.buyerEmail,
-              parcelId: parcelId,
+              orderId: orderId.toString(),
+              productId: orderData.productId,
               transactionId: transactionId,
               paidAt: new Date(),
               status: 'completed',
             };
-            await paymentsCollection.insertOne(payment);
 
-            res.send({ success: true, transactionId });
+            await paymentsCollection.insertOne(payment);
+            console.log('Payment record created');
+
+            console.log('Payment verification completed successfully');
+            res.json({
+              success: true,
+              transactionId,
+              orderId: orderId.toString(),
+              trackingId,
+              message: 'Payment verified and order created successfully',
+            });
+          } else {
+            console.log(
+              'Payment not completed, status:',
+              session.payment_status
+            );
+            res.status(400).json({
+              success: false,
+              message: 'Payment not completed',
+              paymentStatus: session.payment_status,
+            });
           }
         } catch (error) {
-          res.status(500).send({ success: false });
+          console.error('=== PAYMENT VERIFICATION ERROR ===');
+          console.error('Error details:', error);
+          console.error('Error message:', error.message);
+          console.error('Error stack:', error.stack);
+
+          // Handle specific Stripe errors
+          if (error.type === 'StripeInvalidRequestError') {
+            return res.status(400).json({
+              success: false,
+              message: 'Invalid session ID or session not found',
+            });
+          } else if (error.type === 'StripeAPIError') {
+            return res.status(500).json({
+              success: false,
+              message: 'Stripe API error occurred',
+            });
+          } else if (error.type === 'StripeConnectionError') {
+            return res.status(500).json({
+              success: false,
+              message: 'Network error occurred',
+            });
+          }
+
+          // Database errors
+          if (
+            error.name === 'MongoError' ||
+            error.name === 'MongoServerError'
+          ) {
+            return res.status(500).json({
+              success: false,
+              message: 'Database error occurred',
+            });
+          }
+
+          // Generic error response
+          res.status(500).json({
+            success: false,
+            message: 'Payment verification failed',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error.message
+                : undefined,
+          });
         }
       }
     );
