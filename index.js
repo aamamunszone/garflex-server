@@ -302,6 +302,55 @@ async function run() {
       }
     });
 
+    // Update user profile (Protected)
+    app.patch('/users/profile', verifyFirebaseToken, async (req, res) => {
+      try {
+        const email = req.user.email;
+        const { name, photoURL } = req.body;
+
+        // Validation
+        if (!name || name.trim().length < 3) {
+          return res.status(400).json({
+            success: false,
+            message: 'Name must be at least 3 characters long',
+          });
+        }
+
+        // Update user in database
+        const result = await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              name: name.trim(),
+              photoURL: photoURL || '',
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found',
+          });
+        }
+
+        res.status(200).json({
+          success: true,
+          message: 'Profile updated successfully',
+          data: result,
+        });
+      } catch (error) {
+        console.error('Profile update error:', error?.message);
+        res.status(500).json({
+          success: false,
+          message: 'Failed to update profile',
+          error:
+            process.env.NODE_ENV === 'development' ? error?.message : undefined,
+        });
+      }
+    });
+
     // GET all users from DB (Admin Only - Protected)
     app.get(
       '/admin/manage-users',
