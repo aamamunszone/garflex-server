@@ -10,7 +10,27 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // ========== MIDDLEWARE ==========
-app.use(cors());
+// Configure CORS to allow requests from any origin in production
+const corsOptions = {
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:3000',
+    'https://garflex.vercel.app',  // Deployed client
+    'https://garflex-server.vercel.app',  // Our own server (for same-origin if needed)
+    'http://localhost:3001',
+    'http://localhost:3002',
+    'http://localhost:3003',
+    'http://localhost:3004',
+    'http://localhost:3005',
+    'https://*.vercel.app',  // Allow any Vercel deployment
+    'https://*.netlify.app',  // Allow Netlify deployments
+    'https://*.github.io',   // Allow GitHub Pages
+  ],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // ========== FIREBASE ADMIN INITIALIZATION ==========
@@ -589,12 +609,18 @@ async function run() {
       }
     });
 
-    // Get specific product details (Protected)
+    // Get specific product details (Public)
     app.get('/products/:id', async (req, res) => {
       try {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
         const product = await productsCollection.findOne(query);
+        if (!product) {
+          return res.status(404).json({
+            success: false,
+            message: 'Product not found',
+          });
+        }
         res.status(200).json(product);
       } catch (error) {
         res.status(500).json({
