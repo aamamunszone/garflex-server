@@ -489,7 +489,7 @@ async function run() {
     // Get recent 6 products with priority for showOnHomePage (Public)
     app.get('/products/recent', async (req, res) => {
       try {
-        const limitNum = 6;
+        const limitNum = 8;
 
         const pipeline = [
           {
@@ -541,7 +541,7 @@ async function run() {
     });
 
     // Get specific product details (Protected)
-    app.get('/products/:id', verifyFirebaseToken, async (req, res) => {
+    app.get('/products/:id', async (req, res) => {
       try {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
@@ -1228,13 +1228,14 @@ async function run() {
     );
 
     // ---------- Payments Collection APIs ----------
-    // Payment Session Create (POST)
+    // Payment Session Create (Buyer Only - Protected)
     app.post(
       '/create-checkout-session',
       verifyFirebaseToken,
+      verifyBuyer,
       async (req, res) => {
         try {
-          const { cost, parcelId, senderEmail, productName, orderMetadata } =
+          const { cost, parcelId, customerEmail, productName, orderMetadata } =
             req.body;
 
           // Stripe expects amount in cents
@@ -1252,72 +1253,84 @@ async function run() {
                 quantity: 1,
               },
             ],
-            customer_email: senderEmail,
+            customer_email: customerEmail,
             mode: 'payment',
-            // Metadata use kore database update logic handle kora hoy
+
             metadata: {
               parcelId: parcelId,
-              buyerEmail: senderEmail,
-              orderData: JSON.stringify(orderMetadata), // Optional: Save extra info
+              buyerEmail: customerEmail,
+              orderData: JSON.stringify(orderMetadata),
             },
-            success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+            success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
           });
 
           res.send({ url: session.url });
         } catch (error) {
-          res.status(500).send({ error: error.message });
+          res.status(500).json({
+            success: false,
+            message: 'Failed to update tracking info',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
         }
       }
     );
 
-    // Payment Verification & DB Update (PATCH)
-    app.patch('/payment-success', verifyFirebaseToken, async (req, res) => {
-      const { session_id } = req.query;
-      try {
-        const session = await stripe.checkout.sessions.retrieve(session_id);
+    // Payment Verification & DB Update (Buyer Only - Protected)
+    app.patch(
+      '/payment-success',
+      verifyFirebaseToken,
+      verifyBuyer,
+      async (req, res) => {
+        const { session_id } = req.query;
+        try {
+          const session = await stripe.checkout.sessions.retrieve(session_id);
 
-        if (session.payment_status === 'paid') {
-          const transactionId = session.payment_intent;
-          const parcelId = session.metadata.parcelId;
+          if (session.payment_status === 'paid') {
+            const transactionId = session.payment_intent;
+            const parcelId = session.metadata.parcelId;
+            const trackingId = `#GF-${parcelId.slice(-16).toUpperCase()}`;
 
-          // Duplicate payment check
-          const paymentExist = await paymentsCollection.findOne({
-            transactionId,
-          });
-          if (paymentExist) return res.send({ success: true, transactionId });
+            // Duplicate payment check
+            const paymentExist = await paymentsCollection.findOne({
+              transactionId,
+            });
+            if (paymentExist) return res.send({ success: true, transactionId });
 
-          // 1. Update Parcel Status
-          await parcelsCollection.updateOne(
-            { _id: new ObjectId(parcelId) },
-            {
-              $set: {
-                paymentStatus: 'paid',
-                deliveryStatus: 'pending-pickup',
-                transactionId: transactionId,
-                paidAt: new Date(),
-              },
-            }
-          );
+            // 1. Update Parcel Status
+            await ordersCollection.updateOne(
+              { _id: new ObjectId(parcelId) },
+              {
+                $set: {
+                  paymentStatus: 'Paid',
+                  trackingId: trackingId,
+                  paidAt: new Date(),
+                },
+              }
+            );
 
-          // 2. Insert into Payments Collection
-          const payment = {
-            amount: session.amount_total / 100,
-            customerEmail:
-              session.customer_email || session.metadata.buyerEmail,
-            parcelId: parcelId,
-            transactionId: transactionId,
-            paidAt: new Date(),
-            status: 'completed',
-          };
-          await paymentsCollection.insertOne(payment);
+            // 2. Insert into Payments Collection
+            const payment = {
+              amount: session.amount_total / 100,
+              customerEmail:
+                session.customer_email || session.metadata.buyerEmail,
+              parcelId: parcelId,
+              transactionId: transactionId,
+              paidAt: new Date(),
+              status: 'completed',
+            };
+            await paymentsCollection.insertOne(payment);
 
-          res.send({ success: true, transactionId });
+            res.send({ success: true, transactionId });
+          }
+        } catch (error) {
+          res.status(500).send({ success: false });
         }
-      } catch (error) {
-        res.status(500).send({ success: false });
       }
-    });
+    );
 
     // User Specific Payment History (GET)
     app.get('/payments', verifyFirebaseToken, async (req, res) => {
@@ -1331,6 +1344,347 @@ async function run() {
         .toArray();
       res.send(result);
     });
+
+    // ---------- Dashboard Stats APIs ----------
+    // GET Admin Dashboard Stats (Admin Only - Protected)
+    app.get(
+      '/admin/dashboard-stats',
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          // Get counts
+          const totalUsers = await usersCollection.countDocuments();
+          const totalProducts = await productsCollection.countDocuments();
+          const totalOrders = await ordersCollection.countDocuments();
+
+          // Get users by role
+          const adminCount = await usersCollection.countDocuments({
+            role: 'Admin',
+          });
+          const managerCount = await usersCollection.countDocuments({
+            role: 'Manager',
+          });
+          const buyerCount = await usersCollection.countDocuments({
+            role: 'Buyer',
+          });
+
+          // Get orders by status
+          const pendingOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Pending',
+          });
+          const approvedOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Approved',
+          });
+          const shippedOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Shipped',
+          });
+          const deliveredOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Delivered',
+          });
+          const rejectedOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Rejected',
+          });
+
+          // Calculate total revenue from delivered/paid orders
+          const revenueResult = await ordersCollection
+            .aggregate([
+              { $match: { paymentStatus: 'Paid' } },
+              { $group: { _id: null, total: { $sum: '$orderPrice' } } },
+            ])
+            .toArray();
+          const totalRevenue = revenueResult[0]?.total || 0;
+
+          // Get monthly order data for charts (last 6 months)
+          const sixMonthsAgo = new Date();
+          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+          const monthlyOrders = await ordersCollection
+            .aggregate([
+              { $match: { orderDate: { $gte: sixMonthsAgo.toISOString() } } },
+              {
+                $group: {
+                  _id: { $substr: ['$orderDate', 0, 7] },
+                  orders: { $sum: 1 },
+                  revenue: { $sum: '$orderPrice' },
+                },
+              },
+              { $sort: { _id: 1 } },
+            ])
+            .toArray();
+
+          // Get recent orders
+          const recentOrders = await ordersCollection
+            .find()
+            .sort({ orderDate: -1 })
+            .limit(5)
+            .toArray();
+
+          // Get products by category
+          const productsByCategory = await productsCollection
+            .aggregate([
+              { $group: { _id: '$category', count: { $sum: 1 } } },
+              { $sort: { count: -1 } },
+            ])
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: {
+              overview: {
+                totalUsers,
+                totalProducts,
+                totalOrders,
+                totalRevenue,
+              },
+              usersByRole: {
+                admin: adminCount,
+                manager: managerCount,
+                buyer: buyerCount,
+              },
+              ordersByStatus: {
+                pending: pendingOrders,
+                approved: approvedOrders,
+                shipped: shippedOrders,
+                delivered: deliveredOrders,
+                rejected: rejectedOrders,
+              },
+              monthlyOrders,
+              recentOrders,
+              productsByCategory,
+            },
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch dashboard stats',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // GET Manager Dashboard Stats (Manager Only - Protected)
+    app.get(
+      '/manager/dashboard-stats',
+      verifyFirebaseToken,
+      verifyManager,
+      async (req, res) => {
+        try {
+          const email = req.user.email;
+
+          // Get manager's products count
+          const myProducts = await productsCollection.countDocuments({
+            createdBy: email,
+          });
+
+          // Get orders related to manager's products
+          const managerProducts = await productsCollection
+            .find({ createdBy: email })
+            .toArray();
+          const productIds = managerProducts.map((p) => p._id.toString());
+
+          // Get pending orders count
+          const pendingOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Pending',
+          });
+          const approvedOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Approved',
+          });
+          const shippedOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Shipped',
+          });
+          const deliveredOrders = await ordersCollection.countDocuments({
+            orderStatus: 'Delivered',
+          });
+
+          // Get monthly order data for charts (last 6 months)
+          const sixMonthsAgo = new Date();
+          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+          const monthlyOrders = await ordersCollection
+            .aggregate([
+              { $match: { orderDate: { $gte: sixMonthsAgo.toISOString() } } },
+              {
+                $group: {
+                  _id: { $substr: ['$orderDate', 0, 7] },
+                  orders: { $sum: 1 },
+                  revenue: { $sum: '$orderPrice' },
+                },
+              },
+              { $sort: { _id: 1 } },
+            ])
+            .toArray();
+
+          // Get recent pending orders
+          const recentPendingOrders = await ordersCollection
+            .find({ orderStatus: 'Pending' })
+            .sort({ orderDate: -1 })
+            .limit(5)
+            .toArray();
+
+          // Get products by category for this manager
+          const productsByCategory = await productsCollection
+            .aggregate([
+              { $match: { createdBy: email } },
+              { $group: { _id: '$category', count: { $sum: 1 } } },
+              { $sort: { count: -1 } },
+            ])
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: {
+              overview: {
+                myProducts,
+                pendingOrders,
+                approvedOrders,
+                shippedOrders,
+                deliveredOrders,
+              },
+              ordersByStatus: {
+                pending: pendingOrders,
+                approved: approvedOrders,
+                shipped: shippedOrders,
+                delivered: deliveredOrders,
+              },
+              monthlyOrders,
+              recentPendingOrders,
+              productsByCategory,
+            },
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch dashboard stats',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
+
+    // GET Buyer Dashboard Stats (Buyer Only - Protected)
+    app.get(
+      '/buyer/dashboard-stats',
+      verifyFirebaseToken,
+      verifyBuyer,
+      async (req, res) => {
+        try {
+          const email = req.user.email;
+
+          // Get buyer's orders
+          const myOrders = await ordersCollection.countDocuments({
+            userEmail: email,
+          });
+          const pendingOrders = await ordersCollection.countDocuments({
+            userEmail: email,
+            orderStatus: 'Pending',
+          });
+          const approvedOrders = await ordersCollection.countDocuments({
+            userEmail: email,
+            orderStatus: 'Approved',
+          });
+          const shippedOrders = await ordersCollection.countDocuments({
+            userEmail: email,
+            orderStatus: 'Shipped',
+          });
+          const deliveredOrders = await ordersCollection.countDocuments({
+            userEmail: email,
+            orderStatus: 'Delivered',
+          });
+
+          // Calculate total spent
+          const spentResult = await ordersCollection
+            .aggregate([
+              { $match: { userEmail: email, paymentStatus: 'Paid' } },
+              { $group: { _id: null, total: { $sum: '$orderPrice' } } },
+            ])
+            .toArray();
+          const totalSpent = spentResult[0]?.total || 0;
+
+          // Get monthly order data for charts (last 6 months)
+          const sixMonthsAgo = new Date();
+          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+          const monthlyOrders = await ordersCollection
+            .aggregate([
+              {
+                $match: {
+                  userEmail: email,
+                  orderDate: { $gte: sixMonthsAgo.toISOString() },
+                },
+              },
+              {
+                $group: {
+                  _id: { $substr: ['$orderDate', 0, 7] },
+                  orders: { $sum: 1 },
+                  spent: { $sum: '$orderPrice' },
+                },
+              },
+              { $sort: { _id: 1 } },
+            ])
+            .toArray();
+
+          // Get recent orders
+          const recentOrders = await ordersCollection
+            .find({ userEmail: email })
+            .sort({ orderDate: -1 })
+            .limit(5)
+            .toArray();
+
+          // Get orders by category
+          const ordersByCategory = await ordersCollection
+            .aggregate([
+              { $match: { userEmail: email } },
+              {
+                $group: {
+                  _id: '$productCategory',
+                  count: { $sum: 1 },
+                  spent: { $sum: '$orderPrice' },
+                },
+              },
+              { $sort: { count: -1 } },
+            ])
+            .toArray();
+
+          res.status(200).json({
+            success: true,
+            data: {
+              overview: {
+                myOrders,
+                totalSpent,
+                pendingOrders,
+                deliveredOrders,
+              },
+              ordersByStatus: {
+                pending: pendingOrders,
+                approved: approvedOrders,
+                shipped: shippedOrders,
+                delivered: deliveredOrders,
+              },
+              monthlyOrders,
+              recentOrders,
+              ordersByCategory,
+            },
+          });
+        } catch (error) {
+          res.status(500).json({
+            success: false,
+            message: 'Failed to fetch dashboard stats',
+            error:
+              process.env.NODE_ENV === 'development'
+                ? error?.message
+                : undefined,
+          });
+        }
+      }
+    );
 
     // ========== ROUTES END ==========
 
